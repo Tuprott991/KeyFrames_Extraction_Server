@@ -7,6 +7,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 from transnetv2 import TransNetV2
+from video_decoder_utils import RobustVideoCapture, test_video_decode
 
 import numpy as np
 import tensorflow as tf
@@ -104,57 +105,66 @@ def save_frames(keyframes, output_folder):
         cv2.imwrite(filepath, frame)
 
 def extract_frames(video_path, skip_start=0, skip_end=0, resize_shape=RESIZE_SHAPE):
-    """Extract frames with better error handling for codec issues"""
+    """Extract frames from video with robust codec handling"""
+    print(f"🎬 Extracting frames from: {os.path.basename(video_path)}")
+    
+    # Test video decode capability first
+    if not test_video_decode(video_path, num_test_frames=5):
+        print(f"❌ Video decode test failed for: {video_path}")
+        return None, None, None, None
+    
     frames = []
     
-    # First, try to open the video
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception(f"Cannot open video file: {video_path}. This might be due to codec issues (AV1, VP9, etc.)")
-    
-    # Get video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if fps <= 0 or total_frames <= 0:
-        cap.release()
-        raise Exception(f"Invalid video properties: fps={fps}, frames={total_frames}. Video might be corrupted or use unsupported codec.")
-    
-    start_frame = int(fps * skip_start)
-    end_frame = max(start_frame, total_frames - int(fps * skip_end))
-    
-    print(f"   📊 Video info: {total_frames} frames, {fps:.2f} fps, processing frames {start_frame}-{end_frame}")
-    
-    successful_frames = 0
-    failed_frames = 0
-    
-    for frame_idx in range(total_frames):
-        ret, frame = cap.read()
-        if not ret:
-            failed_frames += 1
-            if failed_frames > 10:  # Too many consecutive failures
-                print(f"   ⚠️  Too many failed frame reads ({failed_frames}), stopping at frame {frame_idx}")
-                break
-            continue
+    with RobustVideoCapture(video_path) as cap:
+        if not cap.isOpened():
+            print(f"❌ Could not open video: {video_path}")
+            return None, None, None, None
         
-        if start_frame <= frame_idx < end_frame:
-            try:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame_resized = cv2.resize(frame_rgb, resize_shape)
-                frames.append(frame_resized)
-                successful_frames += 1
-                failed_frames = 0  # Reset failure counter on success
-            except Exception as e:
-                print(f"   ⚠️  Error processing frame {frame_idx}: {e}")
-                failed_frames += 1
-
-    cap.release()
-    
-    if successful_frames == 0:
-        raise Exception(f"No frames could be extracted from {video_path}. This is likely a codec compatibility issue.")
-    
-    print(f"   ✅ Successfully extracted {successful_frames} frames")
-    return np.array(frames), fps, start_frame, end_frame
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        if fps <= 0 or total_frames <= 0:
+            print(f"❌ Invalid video properties: fps={fps}, frames={total_frames}")
+            return None, None, None, None
+        
+        start_frame = int(fps * skip_start)
+        end_frame = max(start_frame, total_frames - int(fps * skip_end))
+        
+        print(f"📊 Processing frames {start_frame} to {end_frame} (total: {total_frames})")
+        
+        frame_idx = 0
+        successful_reads = 0
+        
+        while frame_idx < total_frames:
+            ret, frame = cap.read()
+            if not ret:
+                print(f"⚠️  Frame read failed at index {frame_idx}")
+                break
+            
+            if start_frame <= frame_idx < end_frame:
+                if frame is not None and frame.size > 0:
+                    try:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_resized = cv2.resize(frame_rgb, resize_shape)
+                        frames.append(frame_resized)
+                        successful_reads += 1
+                    except Exception as e:
+                        print(f"⚠️  Error processing frame {frame_idx}: {e}")
+                        continue
+            
+            frame_idx += 1
+            
+            # Progress indicator for long videos
+            if frame_idx % 1000 == 0:
+                print(f"📈 Processed {frame_idx}/{total_frames} frames...")
+        
+        print(f"✅ Successfully extracted {successful_reads} frames")
+        
+        if len(frames) == 0:
+            print(f"❌ No frames were successfully extracted")
+            return None, None, None, None
+            
+        return np.array(frames), fps, start_frame, end_frame
 
 def detect_scene_changes(model, frames, threshold=KEYFRAME_PROB_THRESHOLD):
     """Phát hiện điểm chuyển cảnh bằng TransNetV2"""
@@ -171,72 +181,71 @@ def detect_scene_changes(model, frames, threshold=KEYFRAME_PROB_THRESHOLD):
     return sorted(set(scene_changes))
 
 def extract_keyframes(video_path, scene_changes, frames, fps, start_frame, end_frame):
-    """Extract keyframes with better error handling"""
+    """Extract keyframes with robust codec handling"""
     frame_index, count = 0, 0
     current_segment, keyframes, csv_entries = [], {}, []
     
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise Exception(f"Cannot reopen video file: {video_path}")
+    with RobustVideoCapture(video_path) as cap:
+        if not cap.isOpened():
+            print(f"❌ Cannot reopen video file: {video_path}")
+            return {}, []
 
-    successful_reads = 0
-    failed_reads = 0
+        successful_reads = 0
+        failed_reads = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            if failed_reads > 5:  # Too many consecutive failures
-                print(f"   ⚠️  Too many failed reads, stopping keyframe extraction")
-                break
-            failed_reads += 1
-            frame_index += 1
-            continue
-        
-        failed_reads = 0  # Reset on successful read
-        successful_reads += 1
-
-        if start_frame <= frame_index < end_frame:
-            if frame_index in scene_changes:
-                # Process current segment
-                if current_segment:
-                    segment_start = current_segment[0][0]
-                    segment_end = current_segment[-1][0]
-                    segment_mid = segment_start + (segment_end - segment_start) // 2
-
-                    # Add start, middle, end frames
-                    for pos_name, pos_idx in [("start", segment_start), ("middle", segment_mid), ("end", segment_end)]:
-                        for seg_idx, seg_frame in current_segment:
-                            if seg_idx == pos_idx:
-                                keyframes[seg_idx] = seg_frame
-                                csv_entries.append(format_csv_file(seg_idx, count, fps))
-                                count += 1
-                                break
-                
-                # Start new segment
-                current_segment = [(frame_index, frame)]
-            else:
-                if len(current_segment) > 0:
-                    current_segment.append((frame_index, frame))
-
-        frame_index += 1
-
-    # Process last segment
-    if current_segment:
-        segment_start = current_segment[0][0]
-        segment_end = current_segment[-1][0]
-        segment_mid = segment_start + (segment_end - segment_start) // 2
-
-        for pos_name, pos_idx in [("start", segment_start), ("middle", segment_mid), ("end", segment_end)]:
-            for seg_idx, seg_frame in current_segment:
-                if seg_idx == pos_idx:
-                    keyframes[seg_idx] = seg_frame
-                    csv_entries.append(format_csv_file(seg_idx, count, fps))
-                    count += 1
+        while frame_index < end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                if failed_reads > 10:  # Too many consecutive failures
+                    print(f"⚠️  Too many failed reads ({failed_reads}), stopping keyframe extraction")
                     break
+                failed_reads += 1
+                frame_index += 1
+                continue
+            
+            failed_reads = 0  # Reset on successful read
+            successful_reads += 1
 
-    cap.release()
-    
-    print(f"   ✅ Extracted {len(keyframes)} keyframes from {successful_reads} successful frame reads")
+            if start_frame <= frame_index < end_frame:
+                if frame_index in scene_changes:
+                    # Process current segment
+                    if current_segment:
+                        segment_start = current_segment[0][0]
+                        segment_end = current_segment[-1][0]
+                        segment_mid = segment_start + (segment_end - segment_start) // 2
+
+                        # Add start, middle, end frames
+                        for pos_name, pos_idx in [("start", segment_start), ("middle", segment_mid), ("end", segment_end)]:
+                            for seg_idx, seg_frame in current_segment:
+                                if seg_idx == pos_idx:
+                                    keyframes[seg_idx] = seg_frame
+                                    csv_entries.append(format_csv_file(seg_idx, count, fps))
+                                    count += 1
+                                    break
+                    
+                    # Start new segment
+                    current_segment = [(frame_index, frame)]
+                else:
+                    if len(current_segment) > 0:
+                        current_segment.append((frame_index, frame))
+
+            frame_index += 1
+
+        # Process last segment
+        if current_segment:
+            segment_start = current_segment[0][0]
+            segment_end = current_segment[-1][0]
+            segment_mid = segment_start + (segment_end - segment_start) // 2
+
+            for pos_name, pos_idx in [("start", segment_start), ("middle", segment_mid), ("end", segment_end)]:
+                for seg_idx, seg_frame in current_segment:
+                    if seg_idx == pos_idx:
+                        keyframes[seg_idx] = seg_frame
+                        csv_entries.append(format_csv_file(seg_idx, count, fps))
+                        count += 1
+                        break
+
+    print(f"✅ Extracted {len(keyframes)} keyframes from {successful_reads} frames")
     return keyframes, csv_entries
 
 def filter_duplicate_frames(keyframes):
@@ -314,35 +323,17 @@ def process_videos_isolated(input_folder, output_folder, csv_output_folder):
         try:
             print(f"🎬 Processing video: {video_name}")
 
-            # Check if video can be opened first
-            test_cap = cv2.VideoCapture(video_path)
-            if not test_cap.isOpened():
-                print(f"   ❌ Cannot open video file (codec issue): {video_file}")
-                print(f"   💡 This video might use AV1, VP9, or other unsupported codec")
-                print(f"   💡 Consider converting to H.264 using: python video_codec_fix.py --input_folder {input_folder}")
-                test_cap.release()
+            # Process the video with robust codec handling
+            result = extract_frames(video_path)
+            if result[0] is None:  # Check if extraction failed
+                print(f"❌ Failed to extract frames from {video_name}")
                 skipped_count += 1
                 continue
-            
-            # Test reading a few frames
-            frame_test_count = 0
-            for i in range(5):
-                ret, frame = test_cap.read()
-                if ret:
-                    frame_test_count += 1
-            test_cap.release()
-            
-            if frame_test_count == 0:
-                print(f"   ❌ Cannot read frames from video (codec/corruption issue): {video_file}")
-                print(f"   💡 Try converting this video to H.264 format")
-                skipped_count += 1
-                continue
-
-            # Process the video
-            frames, fps, start_frame, end_frame = extract_frames(video_path)
+                
+            frames, fps, start_frame, end_frame = result
             
             if len(frames) == 0:
-                print(f"   ❌ No frames extracted from {video_file}")
+                print(f"❌ No frames extracted from {video_name}")
                 skipped_count += 1
                 continue
                 
@@ -350,7 +341,7 @@ def process_videos_isolated(input_folder, output_folder, csv_output_folder):
             keyframes, csv_entries = extract_keyframes(video_path, scene_changes, frames, fps, start_frame, end_frame)
             
             if len(keyframes) == 0:
-                print(f"   ⚠️  No keyframes detected in {video_file}")
+                print(f"⚠️  No keyframes detected in {video_name}")
                 skipped_count += 1
                 continue
                 
@@ -367,8 +358,8 @@ def process_videos_isolated(input_folder, output_folder, csv_output_folder):
             error_msg = str(e)
             if "codec" in error_msg.lower() or "av1" in error_msg.lower() or "sequence header" in error_msg.lower():
                 print(f"❌ Codec error processing video {video_name}: {e}")
-                print(f"   💡 This video likely uses AV1, VP9, or another unsupported codec")
-                print(f"   💡 Convert to H.264: python video_codec_fix.py --input_folder {input_folder}")
+                print(f"💡 This video likely uses AV1, VP9, or another unsupported codec")
+                print(f"💡 Try: python video_decoder_utils.py {video_path}")
             else:
                 print(f"❌ Error processing video {video_name}: {e}")
             skipped_count += 1
