@@ -27,6 +27,36 @@ def check_ffmpeg():
         print("❌ FFmpeg not found in PATH")
         return False
 
+def check_available_encoders():
+    """Check which hardware encoders are available"""
+    available_encoders = []
+    
+    encoders_to_check = [
+        ('h264_nvenc', 'NVIDIA NVENC'),
+        ('h264_vaapi', 'Intel/AMD VAAPI'),
+        ('h264_qsv', 'Intel QuickSync'),
+        ('libx264', 'CPU x264')
+    ]
+    
+    for encoder, description in encoders_to_check:
+        try:
+            # Test if encoder is available
+            result = subprocess.run([
+                'ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=1:size=320x240:rate=1',
+                '-c:v', encoder, '-f', 'null', '-'
+            ], capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                available_encoders.append((encoder, description))
+                print(f"✅ {description} ({encoder}) is available")
+            else:
+                print(f"❌ {description} ({encoder}) not available")
+                
+        except Exception:
+            print(f"❌ {description} ({encoder}) not available")
+    
+    return available_encoders
+
 def get_video_info(video_path):
     """Get video codec and other information"""
     try:
@@ -83,39 +113,86 @@ def convert_video_to_h264(input_path, output_path, gpu_accelerated=True):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
         if gpu_accelerated:
-            # Try GPU-accelerated encoding first (NVENC for NVIDIA)
-            cmd = [
-                'ffmpeg', '-y', '-i', input_path,
-                '-c:v', 'h264_nvenc',  # NVIDIA GPU encoder
-                '-preset', 'fast',
-                '-crf', '23',
-                '-c:a', 'aac',
-                '-movflags', '+faststart',
-                output_path
+            # Try different GPU encoders in order of preference
+            gpu_encoders = [
+                {
+                    'name': 'h264_nvenc',
+                    'cmd': [
+                        'ffmpeg', '-y', '-i', input_path,
+                        '-c:v', 'h264_nvenc',  # NVIDIA NVENC
+                        '-preset', 'fast',
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        '-movflags', '+faststart',
+                        output_path
+                    ]
+                },
+                {
+                    'name': 'h264_vaapi',
+                    'cmd': [
+                        'ffmpeg', '-y', '-hwaccel', 'vaapi', '-hwaccel_device', '/dev/dri/renderD128',
+                        '-i', input_path,
+                        '-c:v', 'h264_vaapi',  # Intel/AMD VAAPI
+                        '-qp', '23',
+                        '-c:a', 'aac',
+                        '-movflags', '+faststart',
+                        output_path
+                    ]
+                },
+                {
+                    'name': 'h264_qsv',
+                    'cmd': [
+                        'ffmpeg', '-y', '-hwaccel', 'qsv', '-i', input_path,
+                        '-c:v', 'h264_qsv',  # Intel QuickSync
+                        '-preset', 'fast',
+                        '-global_quality', '23',
+                        '-c:a', 'aac',
+                        '-movflags', '+faststart',
+                        output_path
+                    ]
+                }
             ]
-        else:
-            # Fallback to CPU encoding
-            cmd = [
-                'ffmpeg', '-y', '-i', input_path,
-                '-c:v', 'libx264',  # CPU encoder
-                '-preset', 'medium',
-                '-crf', '23',
-                '-c:a', 'aac',
-                '-movflags', '+faststart',
-                output_path
-            ]
+            
+            for encoder in gpu_encoders:
+                print(f"🔄 Trying GPU encoder: {encoder['name']} for {os.path.basename(input_path)}...")
+                try:
+                    result = subprocess.run(encoder['cmd'], capture_output=True, text=True, timeout=600)
+                    
+                    if result.returncode == 0:
+                        print(f"✅ Successfully converted with {encoder['name']}")
+                        return True
+                    else:
+                        print(f"⚠️  {encoder['name']} failed: {result.stderr.strip()}")
+                        continue
+                        
+                except subprocess.TimeoutExpired:
+                    print(f"⚠️  {encoder['name']} timeout")
+                    continue
+                except Exception as e:
+                    print(f"⚠️  {encoder['name']} error: {e}")
+                    continue
+            
+            print("🔄 All GPU encoders failed, falling back to CPU encoding...")
         
-        print(f"🔄 Converting {os.path.basename(input_path)} to H.264...")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # CPU encoding fallback
+        cpu_cmd = [
+            'ffmpeg', '-y', '-i', input_path,
+            '-c:v', 'libx264',  # CPU encoder
+            '-preset', 'medium',
+            '-crf', '23',
+            '-c:a', 'aac',
+            '-movflags', '+faststart',
+            output_path
+        ]
+        
+        print(f"🔄 Converting {os.path.basename(input_path)} with CPU encoding...")
+        result = subprocess.run(cpu_cmd, capture_output=True, text=True, timeout=1200)
         
         if result.returncode == 0:
-            print(f"✅ Successfully converted to {output_path}")
+            print(f"✅ Successfully converted with CPU encoding")
             return True
         else:
-            print(f"❌ Conversion failed: {result.stderr}")
-            if gpu_accelerated:
-                print("🔄 Retrying with CPU encoding...")
-                return convert_video_to_h264(input_path, output_path, gpu_accelerated=False)
+            print(f"❌ CPU conversion failed: {result.stderr}")
             return False
             
     except subprocess.TimeoutExpired:
@@ -135,6 +212,14 @@ def fix_videos_in_folder(input_folder, replace_original=True):
     # Check FFmpeg availability
     if not check_ffmpeg():
         print("❌ FFmpeg is required for video conversion")
+        return False
+    
+    # Check available encoders
+    print("\n🔍 Checking available hardware encoders...")
+    available_encoders = check_available_encoders()
+    
+    if not available_encoders:
+        print("❌ No video encoders available")
         return False
     
     video_files = []
