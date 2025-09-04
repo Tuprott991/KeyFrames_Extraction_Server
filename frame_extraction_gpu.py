@@ -231,6 +231,12 @@ def process_videos_on_gpu(input_folder, output_folder, csv_output_folder, gpu_id
     print(f"🎉 [GPU {gpu_id}] Finished processing {processed_count} videos from {input_folder}")
     return True
 
+# Print all my GPU devices
+print("Available GPU devices:")
+gpus = tf.config.experimental.list_physical_devices('GPU')
+for i, gpu in enumerate(gpus):
+    print(f"GPU {i}: {gpu}")
+
 def main():
     parser = argparse.ArgumentParser(description='Process videos with keyframe extraction on specific GPU')
     parser.add_argument('--input_folder', required=True, help='Input folder containing videos')
