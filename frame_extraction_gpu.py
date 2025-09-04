@@ -39,34 +39,28 @@ def setup_gpu(gpu_id):
         for i, gpu in enumerate(gpus):
             print(f"   GPU {i}: {gpu}")
         
-        # Configure the specific GPU
+        # Configure memory growth for all GPUs (must be done before any operations)
         try:
-            # Restrict to specific GPU
-            tf.config.experimental.set_visible_devices(gpus[gpu_id], 'GPU')
-            
-            # Enable memory growth to avoid taking all GPU memory at once
-            tf.config.experimental.set_memory_growth(gpus[gpu_id], True)
-            
-            # Optional: Set memory limit if needed (uncomment if you want to limit memory)
-            # tf.config.experimental.set_memory_limit(gpus[gpu_id], 4096)  # 4GB limit
-            
-            print(f"✅ GPU {gpu_id} configured successfully")
-            
-            # Test GPU functionality
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"✅ Memory growth configured for all GPUs")
+        except RuntimeError as e:
+            if "Memory growth" in str(e):
+                print(f"⚠️  Memory growth already configured: {e}")
+            else:
+                print(f"⚠️  Could not configure memory growth: {e}")
+        
+        # Test GPU functionality
+        try:
             with tf.device(f'/GPU:{gpu_id}'):
                 test_tensor = tf.constant([[1.0, 2.0], [3.0, 4.0]])
                 result = tf.matmul(test_tensor, test_tensor)
                 print(f"✅ GPU {gpu_id} test operation successful")
+        except Exception as e:
+            print(f"❌ GPU {gpu_id} test operation failed: {e}")
+            return False
                 
-            return True
-            
-        except RuntimeError as e:
-            if "Memory growth" in str(e):
-                print(f"⚠️  Memory growth setting failed (GPU {gpu_id}), but continuing: {e}")
-                return True
-            else:
-                print(f"❌ Runtime error configuring GPU {gpu_id}: {e}")
-                return False
+        return True
                 
     except Exception as e:
         print(f"❌ Unexpected error during GPU setup: {e}")

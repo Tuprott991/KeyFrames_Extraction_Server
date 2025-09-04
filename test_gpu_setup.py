@@ -44,21 +44,25 @@ def test_gpu_basic():
         print(f"❌ Basic GPU test failed: {e}")
         return False
 
+def configure_all_gpus():
+    """Configure all GPUs with memory growth"""
+    try:
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        if gpus:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            print(f"✅ Configured memory growth for all {len(gpus)} GPUs")
+            return True
+    except Exception as e:
+        print(f"⚠️  Could not configure GPU memory growth: {e}")
+        return True  # Continue anyway
+    return False
+
 def test_gpu_operation(gpu_id):
     """Test GPU operations on specific GPU"""
     print(f"🧪 Testing GPU {gpu_id} operations...")
     
     try:
-        gpus = tf.config.experimental.list_physical_devices('GPU')
-        
-        if gpu_id >= len(gpus):
-            print(f"❌ GPU {gpu_id} not available (found {len(gpus)} GPUs)")
-            return False
-            
-        # Configure GPU
-        tf.config.experimental.set_visible_devices(gpus[gpu_id], 'GPU')
-        tf.config.experimental.set_memory_growth(gpus[gpu_id], True)
-        
         # Test tensor operations
         with tf.device(f'/GPU:{gpu_id}'):
             a = tf.constant([[1.0, 2.0], [3.0, 4.0]])
@@ -78,16 +82,6 @@ def test_transnetv2_model(gpu_id):
     print(f"🤖 Testing TransNetV2 model loading on GPU {gpu_id}...")
     
     try:
-        gpus = tf.config.experimental.list_physical_devices('GPU')
-        
-        if gpu_id >= len(gpus):
-            print(f"❌ GPU {gpu_id} not available")
-            return False
-            
-        # Configure GPU
-        tf.config.experimental.set_visible_devices(gpus[gpu_id], 'GPU')
-        tf.config.experimental.set_memory_growth(gpus[gpu_id], True)
-        
         # Load model
         with tf.device(f'/GPU:{gpu_id}'):
             model = TransNetV2()
@@ -122,6 +116,9 @@ def main():
     
     print("\n" + "-" * 40)
     
+    # Configure all GPUs first (this must be done before any GPU operations)
+    configure_all_gpus()
+    
     # Test 2: Test each GPU
     gpus = tf.config.experimental.list_physical_devices('GPU')
     num_gpus = len(gpus)
@@ -131,6 +128,12 @@ def main():
     
     for gpu_id in range(min(num_gpus, 4)):  # Test first 4 GPUs
         print(f"\n🔧 Testing GPU {gpu_id}:")
+        
+        # Check if GPU exists
+        if gpu_id >= num_gpus:
+            print(f"❌ GPU {gpu_id} not available (only {num_gpus} GPUs found)")
+            failed_gpus.append(gpu_id)
+            continue
         
         # Test GPU operations
         if test_gpu_operation(gpu_id):
