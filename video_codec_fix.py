@@ -8,6 +8,8 @@ import os
 import sys
 import subprocess
 import cv2
+import shutil
+import tempfile
 from pathlib import Path
 
 def check_ffmpeg():
@@ -123,15 +125,12 @@ def convert_video_to_h264(input_path, output_path, gpu_accelerated=True):
         print(f"❌ Conversion error: {e}")
         return False
 
-def fix_videos_in_folder(input_folder, output_folder=None):
+def fix_videos_in_folder(input_folder, replace_original=True):
     """Fix all problematic videos in a folder"""
     
     if not os.path.exists(input_folder):
         print(f"❌ Input folder does not exist: {input_folder}")
         return False
-    
-    if output_folder is None:
-        output_folder = os.path.join(input_folder, "converted")
     
     # Check FFmpeg availability
     if not check_ffmpeg():
@@ -162,7 +161,7 @@ def fix_videos_in_folder(input_folder, output_folder=None):
             print(f"   Codec: {info['codec']}, Resolution: {info['width']}x{info['height']}")
             
             # Check if codec is problematic
-            problematic_codecs = ['av1', 'vp9', 'hevc']
+            problematic_codecs = ['av1', 'vp9', 'hevc', 'h265']
             if info['codec'].lower() in problematic_codecs:
                 print(f"   ⚠️  Problematic codec detected: {info['codec']}")
                 problematic_videos.append(video_path)
@@ -183,54 +182,136 @@ def fix_videos_in_folder(input_folder, output_folder=None):
     if problematic_videos:
         print(f"\n🔧 Converting {len(problematic_videos)} problematic videos...")
         
-        os.makedirs(output_folder, exist_ok=True)
         converted_count = 0
         
         for video_path in problematic_videos:
-            output_path = os.path.join(output_folder, f"fixed_{video_path.name}")
+            # Create temporary file for conversion
+            temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+            temp_path = temp_file.name
+            temp_file.close()
             
-            if convert_video_to_h264(str(video_path), output_path):
-                # Test the converted video
-                if test_opencv_read(output_path):
-                    print(f"   ✅ Converted video works with OpenCV")
-                    converted_count += 1
+            try:
+                if convert_video_to_h264(str(video_path), temp_path):
+                    # Test the converted video
+                    if test_opencv_read(temp_path):
+                        print(f"   ✅ Converted video works with OpenCV")
+                        
+                        if replace_original:
+                            # Replace original file
+                            shutil.move(temp_path, str(video_path))
+                            print(f"   ✅ Replaced original file: {video_path.name}")
+                        else:
+                            # Keep both files
+                            new_name = video_path.stem + "_fixed" + video_path.suffix
+                            new_path = video_path.parent / new_name
+                            shutil.move(temp_path, str(new_path))
+                            print(f"   ✅ Saved fixed version: {new_name}")
+                        
+                        converted_count += 1
+                    else:
+                        print(f"   ⚠️  Converted video still has issues")
+                        os.unlink(temp_path)  # Clean up temp file
                 else:
-                    print(f"   ⚠️  Converted video still has issues")
-            else:
-                print(f"   ❌ Failed to convert {video_path.name}")
+                    print(f"   ❌ Failed to convert {video_path.name}")
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)  # Clean up temp file
+                        
+            except Exception as e:
+                print(f"   ❌ Error processing {video_path.name}: {e}")
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)  # Clean up temp file
         
         print(f"\n🎉 Successfully converted {converted_count}/{len(problematic_videos)} videos")
-        print(f"📁 Converted videos saved to: {output_folder}")
         
         return converted_count > 0
     else:
         print("\n🎉 All videos are compatible with OpenCV!")
         return True
 
+def process_all_video_folders(base_path="/home/tuktu/KeyFrames_Extraction_Server", replace_original=True):
+    """Process all Videos_K01 to Videos_K20 folders"""
+    
+    total_processed = 0
+    total_converted = 0
+    
+    for k in range(1, 21):  # K01 to K20
+        folder_name = f"Videos_K{k:02d}"
+        video_folder = os.path.join(base_path, folder_name, "video")
+        
+        print(f"\n{'='*60}")
+        print(f"Processing folder: {folder_name}")
+        print(f"Path: {video_folder}")
+        print(f"{'='*60}")
+        
+        if not os.path.exists(video_folder):
+            print(f"⚠️  Folder does not exist: {video_folder}")
+            continue
+        
+        try:
+            success = fix_videos_in_folder(video_folder, replace_original)
+            if success:
+                total_processed += 1
+                print(f"✅ Successfully processed {folder_name}")
+            else:
+                print(f"⚠️  Issues found in {folder_name}")
+                
+        except Exception as e:
+            print(f"❌ Error processing {folder_name}: {e}")
+            continue
+    
+    print(f"\n{'='*60}")
+    print(f"🎉 FINAL SUMMARY")
+    print(f"{'='*60}")
+    print(f"Total folders processed: {total_processed}/20")
+    print(f"{'='*60}")
+    
+    return total_processed > 0
+
 def main():
     """Main function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Fix video codec issues for OpenCV processing')
-    parser.add_argument('--input_folder', required=True, help='Input folder containing videos')
-    parser.add_argument('--output_folder', help='Output folder for converted videos')
+    parser = argparse.ArgumentParser(description='Fix video codec issues for OpenCV processing using FFmpeg with L4 GPU')
+    parser.add_argument('--input_folder', help='Single input folder containing videos')
     parser.add_argument('--test_only', action='store_true', help='Only test videos, do not convert')
+    parser.add_argument('--process_all', action='store_true', help='Process all Videos_K01 to Videos_K20 folders')
+    parser.add_argument('--base_path', default='/home/tuktu/KeyFrames_Extraction_Server', 
+                       help='Base path containing Videos_K01 to Videos_K20 folders')
+    parser.add_argument('--keep_original', action='store_true', 
+                       help='Keep original files (create _fixed versions instead of replacing)')
     
     args = parser.parse_args()
     
-    if args.test_only:
-        # Just test the videos
-        video_files = []
-        for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
-            video_files.extend(Path(args.input_folder).glob(f"*{ext}"))
-        
-        for video_path in video_files:
-            info = get_video_info(str(video_path))
-            opencv_ok = test_opencv_read(str(video_path))
-            print(f"{video_path.name}: Codec={info.get('codec', 'unknown')}, OpenCV={'✅' if opencv_ok else '❌'}")
+    if args.process_all:
+        # Process all Videos_K01 to Videos_K20 folders
+        print("🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
+        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original)
+        sys.exit(0 if success else 1)
+    elif args.input_folder:
+        if args.test_only:
+            # Just test the videos
+            video_files = []
+            for ext in ['.mp4', '.avi', '.mov', '.mkv', '.webm']:
+                video_files.extend(Path(args.input_folder).glob(f"*{ext}"))
+            
+            for video_path in video_files:
+                info = get_video_info(str(video_path))
+                opencv_ok = test_opencv_read(str(video_path))
+                print(f"{video_path.name}: Codec={info.get('codec', 'unknown')}, OpenCV={'✅' if opencv_ok else '❌'}")
+        else:
+            success = fix_videos_in_folder(args.input_folder, replace_original=not args.keep_original)
+            sys.exit(0 if success else 1)
     else:
-        success = fix_videos_in_folder(args.input_folder, args.output_folder)
+        # Default: process all folders
+        print("🚀 No specific folder provided. Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
+        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original)
         sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
-    main()
+    # If run without arguments, process all folders by default
+    if len(sys.argv) == 1:
+        print("🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
+        success = process_all_video_folders()
+        sys.exit(0 if success else 1)
+    else:
+        main()
