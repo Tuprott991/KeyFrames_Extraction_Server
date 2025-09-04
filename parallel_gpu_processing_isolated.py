@@ -22,7 +22,7 @@ def run_video_processing(gpu_id, video_folder_name, base_input_path, base_output
     
     # Construct command with environment variables for GPU isolation
     cmd = [
-        sys.executable, "frame_extraction_gpu_isolated.py",
+        sys.executable, "frame_extraction_gpu_isolated_clean.py",
         "--input_folder", input_folder,
         "--output_folder", output_folder,
         "--csv_folder", csv_folder,

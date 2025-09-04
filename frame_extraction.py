@@ -1,5 +1,11 @@
-from TransNetV2.inference.transnetv2 import TransNetV2
+
 import os
+import sys
+
+sys.path.append("/home/tuktu/KeyFrames_Extraction_Server/TransNetV2/inference")
+
+from transnetv2 import TransNetV2
+
 import numpy as np
 import tensorflow as tf
 import cv2
@@ -251,9 +257,34 @@ def process_videos(input_folder, output_folder, csv_output_folder, model):
             print(f"❌ Lỗi khi xử lý video {video_name}: {e}")
             continue
 
-process_videos(
-    input_folder="/kaggle/input/data-video-batch2-2/Videos_K19/video",
-    output_folder="/kaggle/working/images",
-    csv_output_folder="/kaggle/working/csv",
-    model=model
-)
+# Process all video folders from Videos_K01 to Videos_K20
+for k in range(1, 21):  # 1 to 20 inclusive
+    folder_name = f"Videos_K{k:02d}"  # Format as K01, K02, ..., K20
+    input_folder = f"/home/tuktu/KeyFrames_Extraction_Server/{folder_name}/video"
+    output_folder = f"/home/tuktu/KeyFrames_Extraction_Server/output/images/{folder_name}"
+    csv_output_folder = f"/home/tuktu/KeyFrames_Extraction_Server/output/csv/{folder_name}"
+    
+    print(f"\n{'='*50}")
+    print(f"Processing folder: {folder_name}")
+    print(f"{'='*50}")
+    
+    # Check if input folder exists before processing
+    if not os.path.exists(input_folder):
+        print(f"⚠️  Input folder does not exist: {input_folder}")
+        continue
+    
+    try:
+        process_videos(
+            input_folder=input_folder,
+            output_folder=output_folder,
+            csv_output_folder=csv_output_folder,
+            model=model
+        )
+        print(f"✅ Completed processing folder: {folder_name}")
+    except Exception as e:
+        print(f"❌ Error processing folder {folder_name}: {e}")
+        continue
+
+print(f"\n{'='*50}")
+print("🎉 All video folders processing completed!")
+print(f"{'='*50}")
