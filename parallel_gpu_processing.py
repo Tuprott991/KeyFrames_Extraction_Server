@@ -116,7 +116,7 @@ def run_parallel_processing(video_folders, base_input_path, base_output_path, ba
 
 def main():
     # Configuration
-    VIDEO_FOLDERS = [f"Videos_K{i}" for i in range(1, 5)]  # Videos_K1 to Videos_K4
+    VIDEO_FOLDERS = [f"Videos_K0{i}" for i in range(1, 5)]  # Videos_K1 to Videos_K4
     BASE_INPUT_PATH = "/home/tuktu/KeyFrames_Extraction_Server/data"  # Update this path
     BASE_OUTPUT_PATH = "/home/tuktu/KeyFrames_Extraction_Server/output/images"  # Update this path
     BASE_CSV_PATH = "/home/tuktu/KeyFrames_Extraction_Server/output/csv"  # Update this path
