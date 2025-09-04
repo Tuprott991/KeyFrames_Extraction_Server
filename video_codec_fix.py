@@ -11,6 +11,10 @@ import cv2
 import shutil
 import tempfile
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from queue import Queue
+import time
 
 def check_ffmpeg():
     """Check if ffmpeg is available"""
@@ -202,8 +206,50 @@ def convert_video_to_h264(input_path, output_path, gpu_accelerated=True):
         print(f"❌ Conversion error: {e}")
         return False
 
-def fix_videos_in_folder(input_folder, replace_original=True):
-    """Fix all problematic videos in a folder"""
+def convert_single_video(video_path, replace_original=True, worker_id=0):
+    """Convert a single video with worker ID for tracking"""
+    temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
+    temp_path = temp_file.name
+    temp_file.close()
+    
+    try:
+        print(f"[Worker {worker_id}] 🔄 Starting conversion: {video_path.name}")
+        
+        if convert_video_to_h264(str(video_path), temp_path):
+            # Test the converted video
+            if test_opencv_read(temp_path):
+                print(f"[Worker {worker_id}] ✅ Converted video works with OpenCV: {video_path.name}")
+                
+                if replace_original:
+                    # Replace original file
+                    shutil.move(temp_path, str(video_path))
+                    print(f"[Worker {worker_id}] ✅ Replaced original file: {video_path.name}")
+                else:
+                    # Keep both files
+                    new_name = video_path.stem + "_fixed" + video_path.suffix
+                    new_path = video_path.parent / new_name
+                    shutil.move(temp_path, str(new_path))
+                    print(f"[Worker {worker_id}] ✅ Saved fixed version: {new_name}")
+                
+                return True, video_path.name, "Success"
+            else:
+                print(f"[Worker {worker_id}] ⚠️  Converted video still has issues: {video_path.name}")
+                os.unlink(temp_path)  # Clean up temp file
+                return False, video_path.name, "OpenCV compatibility issue"
+        else:
+            print(f"[Worker {worker_id}] ❌ Failed to convert: {video_path.name}")
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)  # Clean up temp file
+            return False, video_path.name, "Conversion failed"
+            
+    except Exception as e:
+        print(f"[Worker {worker_id}] ❌ Error processing {video_path.name}: {e}")
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)  # Clean up temp file
+        return False, video_path.name, str(e)
+
+def fix_videos_in_folder_parallel(input_folder, replace_original=True, max_workers=8):
+    """Fix all problematic videos in a folder using parallel processing"""
     
     if not os.path.exists(input_folder):
         print(f"❌ Input folder does not exist: {input_folder}")
@@ -265,56 +311,50 @@ def fix_videos_in_folder(input_folder, replace_original=True):
     print(f"   ❌ Problematic videos: {len(problematic_videos)}")
     
     if problematic_videos:
-        print(f"\n🔧 Converting {len(problematic_videos)} problematic videos...")
+        print(f"\n🔧 Converting {len(problematic_videos)} problematic videos with {max_workers} parallel workers...")
         
         converted_count = 0
+        failed_count = 0
+        start_time = time.time()
         
-        for video_path in problematic_videos:
-            # Create temporary file for conversion
-            temp_file = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False)
-            temp_path = temp_file.name
-            temp_file.close()
+        # Use ThreadPoolExecutor for parallel processing
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all conversion tasks
+            future_to_video = {
+                executor.submit(convert_single_video, video_path, replace_original, i % max_workers): video_path 
+                for i, video_path in enumerate(problematic_videos)
+            }
             
-            try:
-                if convert_video_to_h264(str(video_path), temp_path):
-                    # Test the converted video
-                    if test_opencv_read(temp_path):
-                        print(f"   ✅ Converted video works with OpenCV")
-                        
-                        if replace_original:
-                            # Replace original file
-                            shutil.move(temp_path, str(video_path))
-                            print(f"   ✅ Replaced original file: {video_path.name}")
-                        else:
-                            # Keep both files
-                            new_name = video_path.stem + "_fixed" + video_path.suffix
-                            new_path = video_path.parent / new_name
-                            shutil.move(temp_path, str(new_path))
-                            print(f"   ✅ Saved fixed version: {new_name}")
-                        
+            # Process completed tasks
+            for future in as_completed(future_to_video):
+                video_path = future_to_video[future]
+                try:
+                    success, filename, message = future.result()
+                    if success:
                         converted_count += 1
                     else:
-                        print(f"   ⚠️  Converted video still has issues")
-                        os.unlink(temp_path)  # Clean up temp file
-                else:
-                    print(f"   ❌ Failed to convert {video_path.name}")
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)  # Clean up temp file
-                        
-            except Exception as e:
-                print(f"   ❌ Error processing {video_path.name}: {e}")
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)  # Clean up temp file
+                        failed_count += 1
+                        print(f"❌ Failed: {filename} - {message}")
+                except Exception as exc:
+                    failed_count += 1
+                    print(f"❌ Exception for {video_path.name}: {exc}")
         
-        print(f"\n🎉 Successfully converted {converted_count}/{len(problematic_videos)} videos")
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        print(f"\n🎉 Parallel conversion completed!")
+        print(f"   ✅ Successfully converted: {converted_count}/{len(problematic_videos)} videos")
+        print(f"   ❌ Failed conversions: {failed_count}")
+        print(f"   ⏱️  Total time: {total_time:.2f} seconds")
+        print(f"   🚀 Average time per video: {total_time/len(problematic_videos):.2f} seconds")
         
         return converted_count > 0
     else:
         print("\n🎉 All videos are compatible with OpenCV!")
         return True
 
-def process_all_video_folders(base_path="/home/tuktu/KeyFrames_Extraction_Server", replace_original=True):
-    """Process all Videos_K01 to Videos_K20 folders"""
+def process_all_video_folders(base_path="/home/tuktu/KeyFrames_Extraction_Server", replace_original=True, max_workers=8):
+    """Process all Videos_K01 to Videos_K20 folders with parallel processing"""
     
     total_processed = 0
     total_converted = 0
@@ -333,7 +373,7 @@ def process_all_video_folders(base_path="/home/tuktu/KeyFrames_Extraction_Server
             continue
         
         try:
-            success = fix_videos_in_folder(video_folder, replace_original)
+            success = fix_videos_in_folder_parallel(video_folder, replace_original, max_workers)
             if success:
                 total_processed += 1
                 print(f"✅ Successfully processed {folder_name}")
@@ -356,7 +396,7 @@ def main():
     """Main function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Fix video codec issues for OpenCV processing using FFmpeg with L4 GPU')
+    parser = argparse.ArgumentParser(description='Fix video codec issues for OpenCV processing using FFmpeg with L4 GPU and parallel processing')
     parser.add_argument('--input_folder', help='Single input folder containing videos')
     parser.add_argument('--test_only', action='store_true', help='Only test videos, do not convert')
     parser.add_argument('--process_all', action='store_true', help='Process all Videos_K01 to Videos_K20 folders')
@@ -364,13 +404,15 @@ def main():
                        help='Base path containing Videos_K01 to Videos_K20 folders')
     parser.add_argument('--keep_original', action='store_true', 
                        help='Keep original files (create _fixed versions instead of replacing)')
+    parser.add_argument('--max_workers', type=int, default=8,
+                       help='Maximum number of parallel conversion workers (default: 8)')
     
     args = parser.parse_args()
     
     if args.process_all:
         # Process all Videos_K01 to Videos_K20 folders
-        print("🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
-        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original)
+        print(f"🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration ({args.max_workers} parallel workers)...")
+        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original, max_workers=args.max_workers)
         sys.exit(0 if success else 1)
     elif args.input_folder:
         if args.test_only:
@@ -384,19 +426,19 @@ def main():
                 opencv_ok = test_opencv_read(str(video_path))
                 print(f"{video_path.name}: Codec={info.get('codec', 'unknown')}, OpenCV={'✅' if opencv_ok else '❌'}")
         else:
-            success = fix_videos_in_folder(args.input_folder, replace_original=not args.keep_original)
+            success = fix_videos_in_folder_parallel(args.input_folder, replace_original=not args.keep_original, max_workers=args.max_workers)
             sys.exit(0 if success else 1)
     else:
         # Default: process all folders
-        print("🚀 No specific folder provided. Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
-        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original)
+        print(f"🚀 No specific folder provided. Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration ({args.max_workers} parallel workers)...")
+        success = process_all_video_folders(args.base_path, replace_original=not args.keep_original, max_workers=args.max_workers)
         sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     # If run without arguments, process all folders by default
     if len(sys.argv) == 1:
-        print("🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration...")
-        success = process_all_video_folders()
+        print("🚀 Processing all Videos_K01 to Videos_K20 folders with L4 GPU acceleration (8 parallel workers)...")
+        success = process_all_video_folders(max_workers=8)
         sys.exit(0 if success else 1)
     else:
         main()
