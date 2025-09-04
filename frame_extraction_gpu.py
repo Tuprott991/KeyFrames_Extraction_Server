@@ -2,6 +2,10 @@ import os
 import sys
 sys.path.append("/home/tuktu/KeyFrames_Extraction_Server/TransNetV2/inference")
 
+# Suppress TensorFlow warnings and NUMA warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress INFO and WARNING messages
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
 from transnetv2 import TransNetV2
 
 import numpy as np
@@ -14,21 +18,58 @@ import csv
 import sys
 import argparse
 
+# Configure TensorFlow logging
+tf.get_logger().setLevel('ERROR')
+
 def setup_gpu(gpu_id):
-    """Configure TensorFlow to use a specific GPU"""
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        try:
-            # Enable memory growth for the specified GPU
-            tf.config.experimental.set_visible_devices(gpus[gpu_id], 'GPU')
-            tf.config.experimental.set_memory_growth(gpus[gpu_id], True)
-            print(f"✅ GPU {gpu_id} configured successfully")
-            return True
-        except (RuntimeError, IndexError) as e:
-            print(f"❌ Error configuring GPU {gpu_id}: {e}")
+    """Configure TensorFlow to use a specific GPU with improved error handling"""
+    try:
+        # List available GPUs
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        
+        if not gpus:
+            print(f"❌ No GPUs found on the system")
             return False
-    else:
-        print("❌ No GPUs found")
+            
+        if gpu_id >= len(gpus):
+            print(f"❌ GPU {gpu_id} not available. Available GPUs: {len(gpus)} (0-{len(gpus)-1})")
+            return False
+        
+        print(f"🔍 Available GPUs: {len(gpus)}")
+        for i, gpu in enumerate(gpus):
+            print(f"   GPU {i}: {gpu}")
+        
+        # Configure the specific GPU
+        try:
+            # Restrict to specific GPU
+            tf.config.experimental.set_visible_devices(gpus[gpu_id], 'GPU')
+            
+            # Enable memory growth to avoid taking all GPU memory at once
+            tf.config.experimental.set_memory_growth(gpus[gpu_id], True)
+            
+            # Optional: Set memory limit if needed (uncomment if you want to limit memory)
+            # tf.config.experimental.set_memory_limit(gpus[gpu_id], 4096)  # 4GB limit
+            
+            print(f"✅ GPU {gpu_id} configured successfully")
+            
+            # Test GPU functionality
+            with tf.device(f'/GPU:{gpu_id}'):
+                test_tensor = tf.constant([[1.0, 2.0], [3.0, 4.0]])
+                result = tf.matmul(test_tensor, test_tensor)
+                print(f"✅ GPU {gpu_id} test operation successful")
+                
+            return True
+            
+        except RuntimeError as e:
+            if "Memory growth" in str(e):
+                print(f"⚠️  Memory growth setting failed (GPU {gpu_id}), but continuing: {e}")
+                return True
+            else:
+                print(f"❌ Runtime error configuring GPU {gpu_id}: {e}")
+                return False
+                
+    except Exception as e:
+        print(f"❌ Unexpected error during GPU setup: {e}")
         return False
 
 def calculate_image_hash(frame):
@@ -176,8 +217,21 @@ def save_frames(frames_dict, output_folder):
         cv2.imwrite(output_path, frame)
 
 def process_videos_on_gpu(input_folder, output_folder, csv_output_folder, gpu_id):
-    """Process videos using a specific GPU"""
+    """Process videos using a specific GPU with improved error handling"""
     print(f"🚀 Starting processing on GPU {gpu_id} for folder: {input_folder}")
+    
+    # Validate input folder exists
+    if not os.path.exists(input_folder):
+        print(f"❌ Input folder does not exist: {input_folder}")
+        return False
+    
+    # Check if there are any videos to process
+    video_files = [f for f in os.listdir(input_folder) if f.endswith(".mp4")]
+    if not video_files:
+        print(f"❌ No MP4 videos found in {input_folder}")
+        return False
+    
+    print(f"📁 Found {len(video_files)} videos to process")
     
     # Setup GPU
     if not setup_gpu(gpu_id):
@@ -186,15 +240,23 @@ def process_videos_on_gpu(input_folder, output_folder, csv_output_folder, gpu_id
     
     # Load model after GPU setup
     try:
-        model = TransNetV2()
+        print(f"🔄 Loading TransNetV2 model on GPU {gpu_id}...")
+        with tf.device(f'/GPU:{gpu_id}'):
+            model = TransNetV2()
         print(f"✅ Model loaded successfully on GPU {gpu_id}")
     except Exception as e:
         print(f"❌ Failed to load model on GPU {gpu_id}: {e}")
+        print(f"💡 This might be due to GPU memory issues or model file problems")
         return False
 
     # Create output folders
-    os.makedirs(output_folder, exist_ok=True)
-    os.makedirs(csv_output_folder, exist_ok=True)
+    try:
+        os.makedirs(output_folder, exist_ok=True)
+        os.makedirs(csv_output_folder, exist_ok=True)
+        print(f"📂 Output folders created: {output_folder}, {csv_output_folder}")
+    except Exception as e:
+        print(f"❌ Failed to create output folders: {e}")
+        return False
 
     # Process videos
     processed_count = 0
@@ -231,11 +293,38 @@ def process_videos_on_gpu(input_folder, output_folder, csv_output_folder, gpu_id
     print(f"🎉 [GPU {gpu_id}] Finished processing {processed_count} videos from {input_folder}")
     return True
 
-# Print all my GPU devices
-print("Available GPU devices:")
-gpus = tf.config.experimental.list_physical_devices('GPU')
-for i, gpu in enumerate(gpus):
-    print(f"GPU {i}: {gpu}")
+# Print all available GPU devices
+def print_gpu_info():
+    """Print comprehensive GPU information"""
+    try:
+        print("🔍 Checking GPU availability...")
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        
+        if not gpus:
+            print("❌ No GPU devices found")
+            return
+            
+        print(f"✅ Found {len(gpus)} GPU device(s):")
+        for i, gpu in enumerate(gpus):
+            try:
+                gpu_details = tf.config.experimental.get_device_details(gpu)
+                print(f"   GPU {i}: {gpu}")
+                if 'device_name' in gpu_details:
+                    print(f"       Name: {gpu_details['device_name']}")
+                if 'compute_capability' in gpu_details:
+                    print(f"       Compute Capability: {gpu_details['compute_capability']}")
+            except:
+                print(f"   GPU {i}: {gpu}")
+                
+        # Check if CUDA is available
+        print(f"🎯 CUDA available: {tf.test.is_built_with_cuda()}")
+        print(f"🎯 GPU support: {tf.test.is_gpu_available()}")
+        
+    except Exception as e:
+        print(f"❌ Error checking GPU info: {e}")
+
+# Call GPU info function
+print_gpu_info()
 
 def main():
     parser = argparse.ArgumentParser(description='Process videos with keyframe extraction on specific GPU')
