@@ -1,5 +1,8 @@
-from TransNetV2.inference.transnetv2 import TransNetV2
 import os
+sys.path.append("/home/tuktu/KeyFrames_Extraction_Server/TransNetV2")
+
+from transnetv2 import TransNetV2
+
 import numpy as np
 import tensorflow as tf
 import cv2
