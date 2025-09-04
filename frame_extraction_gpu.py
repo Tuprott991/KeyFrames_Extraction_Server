@@ -1,4 +1,5 @@
 import os
+import sys
 sys.path.append("/home/tuktu/KeyFrames_Extraction_Server/TransNetV2")
 
 from transnetv2 import TransNetV2
