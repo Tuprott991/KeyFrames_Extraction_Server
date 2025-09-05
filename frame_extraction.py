@@ -86,11 +86,13 @@ def extract_frames(video_path, resize_shape=(48, 27), skip_start=5, skip_end=10)
     start_frame = int(fps * skip_start)
     end_frame = max(start_frame, total_frames - int(fps * skip_end))  # tránh âm
 
+
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
         if not ret:
             break # Kết thúc nếu không còn frame nào để đọc
-
+        # Print frame shape for debugging
+        print(f"Frame {frame_idx}: shape {frame.shape}")
         if start_frame <= frame_idx < end_frame:
             # Chuyển đổi màu sắc từ BGR sang RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
