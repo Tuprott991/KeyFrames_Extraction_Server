@@ -222,7 +222,7 @@ def process_videos(input_folder, output_folder, csv_output_folder, model):
 
     # Duyệt qua tất cả các file trong thư mục input
     for video_file in sorted(os.listdir(input_folder)):
-        if not video_file.endswith(".mp4") or video_file == "L25_V012.mp4":
+        if not video_file.endswith(".mp4") or video_file == "L25_V012.mp4" or video_file == "K01_V001.mp4" or video_file == "K01_V002.mp4":
             print(f"Bỏ qua file {video_file}")
             continue
 
