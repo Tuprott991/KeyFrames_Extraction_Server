@@ -92,7 +92,6 @@ def extract_frames(video_path, resize_shape=(48, 27), skip_start=5, skip_end=10)
         if not ret:
             break # Kết thúc nếu không còn frame nào để đọc
         # Print frame shape for debugging
-        print(f"Frame {frame_idx}: shape {frame.shape}")
         if start_frame <= frame_idx < end_frame:
             # Chuyển đổi màu sắc từ BGR sang RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -239,6 +238,10 @@ def process_videos(input_folder, output_folder, csv_output_folder, model):
 
             # Extract frames
             frames, fps, start_frame, end_frame = extract_frames(video_path)
+
+            # Print frames shape
+            print(f"Extracted {len(frames)} frames with shape {frames.shape} (if frames exist)")
+
 
             # Scene detection (using model in config)
             scene_changes = detect_scene_changes(model, frames)
